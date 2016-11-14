@@ -1,12 +1,22 @@
 package beanstalk
 
 import (
+	"io"
 	"testing"
 	"time"
 )
 
+var config = &Config{
+	Delay:   1 * time.Second,
+	Retries: 1,
+}
+
+var mockDial = func(net string, addr string) (io.ReadWriteCloser, error) {
+	return mock("", ""), nil
+}
+
 func TestNameTooLong(t *testing.T) {
-	c := NewConn(mock("", ""))
+	c, _ := NewConn(mockDial, config)
 
 	tube := Tube{c, string(make([]byte, 201))}
 	_, err := tube.Put([]byte("foo"), 0, 0, 0)
@@ -19,7 +29,7 @@ func TestNameTooLong(t *testing.T) {
 }
 
 func TestNameEmpty(t *testing.T) {
-	c := NewConn(mock("", ""))
+	c, _ := NewConn(mockDial, config)
 
 	tube := Tube{c, ""}
 	_, err := tube.Put([]byte("foo"), 0, 0, 0)
@@ -32,7 +42,7 @@ func TestNameEmpty(t *testing.T) {
 }
 
 func TestNameBadChar(t *testing.T) {
-	c := NewConn(mock("", ""))
+	c, _ := NewConn(mockDial, config)
 
 	tube := Tube{c, "*"}
 	_, err := tube.Put([]byte("foo"), 0, 0, 0)
@@ -45,7 +55,10 @@ func TestNameBadChar(t *testing.T) {
 }
 
 func TestDeleteMissing(t *testing.T) {
-	c := NewConn(mock("delete 1\r\n", "NOT_FOUND\r\n"))
+	var mockDial = func(net string, addr string) (io.ReadWriteCloser, error) {
+		return mock("delete 1\r\n", "NOT_FOUND\r\n"), nil
+	}
+	c, _ := NewConn(mockDial, config)
 
 	err := c.Delete(1)
 	if e, ok := err.(ConnError); !ok || e.Err != ErrNotFound {
@@ -57,10 +70,13 @@ func TestDeleteMissing(t *testing.T) {
 }
 
 func TestUse(t *testing.T) {
-	c := NewConn(mock(
-		"use foo\r\nput 0 0 0 5\r\nhello\r\n",
-		"USING foo\r\nINSERTED 1\r\n",
-	))
+	var mockDial = func(net string, addr string) (io.ReadWriteCloser, error) {
+		return mock(
+			"use foo\r\nput 0 0 0 5\r\nhello\r\n",
+			"USING foo\r\nINSERTED 1\r\n",
+		), nil
+	}
+	c, _ := NewConn(mockDial, config)
 	tube := Tube{c, "foo"}
 	id, err := tube.Put([]byte("hello"), 0, 0, 0)
 	if err != nil {
@@ -75,10 +91,13 @@ func TestUse(t *testing.T) {
 }
 
 func TestWatchIgnore(t *testing.T) {
-	c := NewConn(mock(
-		"watch foo\r\nignore default\r\nreserve-with-timeout 1\r\n",
-		"WATCHING 2\r\nWATCHING 1\r\nRESERVED 1 1\r\nx\r\n",
-	))
+	var mockDial = func(net string, addr string) (io.ReadWriteCloser, error) {
+		return mock(
+			"watch foo\r\nignore default\r\nreserve-with-timeout 1\r\n",
+			"WATCHING 2\r\nWATCHING 1\r\nRESERVED 1 1\r\nx\r\n",
+		), nil
+	}
+	c, _ := NewConn(mockDial, config)
 	ts := NewTubeSet(c, "foo")
 	id, body, err := ts.Reserve(time.Second)
 	if err != nil {
@@ -96,8 +115,10 @@ func TestWatchIgnore(t *testing.T) {
 }
 
 func TestBury(t *testing.T) {
-	c := NewConn(mock("bury 1 3\r\n", "BURIED\r\n"))
-
+	var mockDial = func(net string, addr string) (io.ReadWriteCloser, error) {
+		return mock("bury 1 3\r\n", "BURIED\r\n"), nil
+	}
+	c, _ := NewConn(mockDial, config)
 	err := c.Bury(1, 3)
 	if err != nil {
 		t.Fatal(err)
@@ -108,7 +129,10 @@ func TestBury(t *testing.T) {
 }
 
 func TestDelete(t *testing.T) {
-	c := NewConn(mock("delete 1\r\n", "DELETED\r\n"))
+	var mockDial = func(net string, addr string) (io.ReadWriteCloser, error) {
+		return mock("delete 1\r\n", "DELETED\r\n"), nil
+	}
+	c, _ := NewConn(mockDial, config)
 
 	err := c.Delete(1)
 	if err != nil {
@@ -120,7 +144,10 @@ func TestDelete(t *testing.T) {
 }
 
 func TestListTubes(t *testing.T) {
-	c := NewConn(mock("list-tubes\r\n", "OK 14\r\n---\n- default\n\r\n"))
+	var mockDial = func(net string, addr string) (io.ReadWriteCloser, error) {
+		return mock("list-tubes\r\n", "OK 14\r\n---\n- default\n\r\n"), nil
+	}
+	c, _ := NewConn(mockDial, config)
 
 	l, err := c.ListTubes()
 	if err != nil {
@@ -135,7 +162,10 @@ func TestListTubes(t *testing.T) {
 }
 
 func TestPeek(t *testing.T) {
-	c := NewConn(mock("peek 1\r\n", "FOUND 1 1\r\nx\r\n"))
+	var mockDial = func(net string, addr string) (io.ReadWriteCloser, error) {
+		return mock("peek 1\r\n", "FOUND 1 1\r\nx\r\n"), nil
+	}
+	c, _ := NewConn(mockDial, config)
 
 	body, err := c.Peek(1)
 	if err != nil {
@@ -150,10 +180,13 @@ func TestPeek(t *testing.T) {
 }
 
 func TestPeekTwice(t *testing.T) {
-	c := NewConn(mock(
-		"peek 1\r\npeek 1\r\n",
-		"FOUND 1 1\r\nx\r\nFOUND 1 1\r\nx\r\n",
-	))
+	var mockDial = func(net string, addr string) (io.ReadWriteCloser, error) {
+		return mock(
+			"peek 1\r\npeek 1\r\n",
+			"FOUND 1 1\r\nx\r\nFOUND 1 1\r\nx\r\n",
+		), nil
+	}
+	c, _ := NewConn(mockDial, config)
 
 	body, err := c.Peek(1)
 	if err != nil {
@@ -176,7 +209,10 @@ func TestPeekTwice(t *testing.T) {
 }
 
 func TestRelease(t *testing.T) {
-	c := NewConn(mock("release 1 3 2\r\n", "RELEASED\r\n"))
+	var mockDial = func(net string, addr string) (io.ReadWriteCloser, error) {
+		return mock("release 1 3 2\r\n", "RELEASED\r\n"), nil
+	}
+	c, _ := NewConn(mockDial, config)
 
 	err := c.Release(1, 3, 2*time.Second)
 	if err != nil {
@@ -188,7 +224,10 @@ func TestRelease(t *testing.T) {
 }
 
 func TestStats(t *testing.T) {
-	c := NewConn(mock("stats\r\n", "OK 10\r\n---\na: ok\n\r\n"))
+	var mockDial = func(net string, addr string) (io.ReadWriteCloser, error) {
+		return mock("stats\r\n", "OK 10\r\n---\na: ok\n\r\n"), nil
+	}
+	c, _ := NewConn(mockDial, config)
 
 	m, err := c.Stats()
 	if err != nil {
@@ -203,7 +242,10 @@ func TestStats(t *testing.T) {
 }
 
 func TestStatsJob(t *testing.T) {
-	c := NewConn(mock("stats-job 1\r\n", "OK 10\r\n---\na: ok\n\r\n"))
+	var mockDial = func(net string, addr string) (io.ReadWriteCloser, error) {
+		return mock("stats-job 1\r\n", "OK 10\r\n---\na: ok\n\r\n"), nil
+	}
+	c, _ := NewConn(mockDial, config)
 
 	m, err := c.StatsJob(1)
 	if err != nil {
@@ -218,7 +260,10 @@ func TestStatsJob(t *testing.T) {
 }
 
 func TestTouch(t *testing.T) {
-	c := NewConn(mock("touch 1\r\n", "TOUCHED\r\n"))
+	var mockDial = func(net string, addr string) (io.ReadWriteCloser, error) {
+		return mock("touch 1\r\n", "TOUCHED\r\n"), nil
+	}
+	c, _ := NewConn(mockDial, config)
 
 	err := c.Touch(1)
 	if err != nil {

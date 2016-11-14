@@ -1,13 +1,24 @@
 package beanstalk
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"net"
 	"net/textproto"
 	"strings"
+	"sync"
 	"time"
 )
+
+var errReconnect = errors.New("reconnect error")
+
+type Config struct {
+	Network string
+	Addr    string
+	Retries int
+	Delay   time.Duration
+}
 
 // A Conn represents a connection to a beanstalkd server. It consists
 // of a default Tube and TubeSet as well as the underlying network
@@ -17,6 +28,11 @@ type Conn struct {
 	c       *textproto.Conn
 	used    string
 	watched map[string]bool
+	addr    string
+	network string
+	mutex   *sync.Mutex
+	retries int
+	delay   time.Duration
 	Tube
 	TubeSet
 }
@@ -30,25 +46,56 @@ var (
 	minusSpace = []byte{'-', ' '}
 )
 
-// NewConn returns a new Conn using conn for I/O.
-func NewConn(conn io.ReadWriteCloser) *Conn {
+func NewConn(dial func(string, string) (io.ReadWriteCloser, error), config *Config) (*Conn, error) {
+	conn, err := dial(config.Network, config.Addr)
+	if err != nil {
+		return nil, err
+	}
 	c := new(Conn)
 	c.c = textproto.NewConn(conn)
 	c.Tube = Tube{c, "default"}
 	c.TubeSet = *NewTubeSet(c, "default")
 	c.used = "default"
 	c.watched = map[string]bool{"default": true}
-	return c
+	c.addr = config.Addr
+	c.network = config.Network
+	c.mutex = &sync.Mutex{}
+	c.retries = config.Retries
+	c.delay = config.Delay
+	return c, nil
 }
 
 // Dial connects to the given address on the given network using net.Dial
 // and then returns a new Conn for the connection.
-func Dial(network, addr string) (*Conn, error) {
-	c, err := net.Dial(network, addr)
-	if err != nil {
-		return nil, err
+func Dial(config *Config) (*Conn, error) {
+	dial := func(network string, addr string) (io.ReadWriteCloser, error) {
+		return net.Dial(network, addr)
 	}
-	return NewConn(c), nil
+	return NewConn(dial, config)
+}
+
+func (c *Conn) Reconnect() error {
+	c.mutex.Lock()
+	defer c.mutex.Unlock()
+
+	dial := func() bool {
+		conn, err := textproto.Dial(c.network, c.addr)
+		if err != nil {
+			println(c.delay)
+			time.Sleep(c.delay)
+			return false
+		}
+		c.c = conn
+		return true
+	}
+
+	for i := 0; i < c.retries; i++ {
+		if dial() {
+			return nil
+		}
+	}
+
+	return errReconnect
 }
 
 // Close closes the underlying network connection.
@@ -57,26 +104,42 @@ func (c *Conn) Close() error {
 }
 
 func (c *Conn) cmd(t *Tube, ts *TubeSet, body []byte, op string, args ...interface{}) (req, error) {
-	r := req{c.c.Next(), op}
-	c.c.StartRequest(r.id)
-	err := c.adjustTubes(t, ts)
-	if err != nil {
-		return req{}, err
+	for {
+		r := req{c.c.Next(), op}
+		c.c.StartRequest(r.id)
+		err := c.adjustTubes(t, ts)
+		if err != nil {
+			c.c.EndRequest(r.id)
+			return req{}, err
+		}
+		if body != nil {
+			args = append(args, len(body))
+		}
+		c.printLine(string(op), args...)
+		if body != nil {
+			c.c.W.Write(body)
+			c.c.W.Write(crnl)
+		}
+		err = c.c.W.Flush()
+		if _, ok := err.(*net.OpError); ok {
+			err = c.Reconnect()
+			if err != nil {
+				c.c.EndRequest(r.id)
+				return req{}, ConnError{c, op, err}
+			}
+			// connection was successful. trying to create the request again
+			continue
+		}
+
+		if err != nil {
+			c.c.EndRequest(r.id)
+			return req{}, ConnError{c, op, err}
+		}
+
+		c.c.EndRequest(r.id)
+
+		return r, nil
 	}
-	if body != nil {
-		args = append(args, len(body))
-	}
-	c.printLine(string(op), args...)
-	if body != nil {
-		c.c.W.Write(body)
-		c.c.W.Write(crnl)
-	}
-	err = c.c.W.Flush()
-	if err != nil {
-		return req{}, ConnError{c, op, err}
-	}
-	c.c.EndRequest(r.id)
-	return r, nil
 }
 
 func (c *Conn) adjustTubes(t *Tube, ts *TubeSet) error {
