@@ -1,9 +1,15 @@
+/*
+Sniperkit-Bot
+- Status: analyzed
+*/
+
 package beanstalk_test
 
 import (
 	"fmt"
-	"github.com/kr/beanstalk"
 	"time"
+
+	"github.com/kr/beanstalk"
 )
 
 var conn, _ = beanstalk.Dial("tcp", "127.0.0.1:11300")

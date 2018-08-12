@@ -1,6 +1,13 @@
+/*
+Sniperkit-Bot
+- Status: analyzed
+*/
+
 package beanstalk
 
-import "errors"
+import (
+	"errors"
+)
 
 // ConnError records an error message from the server and the operation
 // and connection that caused it.
